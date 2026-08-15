@@ -1,0 +1,21 @@
+.DS_Store
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# NinaPro data, derived caches, and experiment artifacts
+data/
+local_workspace/
+results/
+artifacts/
+*.mat
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.joblib
+*.csv
+*.log
