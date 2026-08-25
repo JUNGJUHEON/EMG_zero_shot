@@ -1,4 +1,4 @@
-name: ninapro-db5-draft
+name: ninapro-db5-unseen
 channels:
   - conda-forge
 dependencies:
