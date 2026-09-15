@@ -1,19 +1,50 @@
 # Pose-Assisted Unseen-Gesture Recognition on NinaPro DB5
 
-This repository contains a research pipeline for recognizing **unseen Exercise-B
-hand gestures from target-subject EMG**. The target subject is calibrated with the
-12 basic Exercise-A movements plus Exercise-B movements B5 and B6. The evaluated
-classes B1, B2, B3, B4, and B7 have no labeled target-subject EMG examples in the
-calibration set.
+**Can a limited library of hand movements support recognition of gestures that
+were never labeled in a target user's calibration data?**
 
-The implementation is a structured pipeline based on handcrafted EMG features,
-RidgeCV pose prediction, exact-capacity balanced clustering, cross-subject pose
-prototypes, and one-to-one semantic assignment. It is **not** an implementation of
-the EMBridge MAE/Q-Former neural architecture.
+An independent undergraduate research project by **Ju Heon Jung**, investigating
+generalization between movement sets using paired surface electromyography
+(sEMG) and glove measurements. Calibration uses 12 isolated finger movements and
+two coordinated movements, finger spreading and fist closure. Evaluation uses
+five other gestures.
 
-> **Result scope:** the values below are replay-verified retrospective internal
-> development results on the same ten-subject DB5 cohort that informed method
-> development. They are not independent external-validation estimates.
+The central design separates two questions: **which EMG trials belong together,
+and what movement does each group represent?** EMG features supply grouping
+information; an EMG-to-pose regression and other-participant pose prototypes
+supply movement identities. This makes the distinction between signal
+separability and meaningful cross-modal correspondence explicit.
+
+**Observed endpoint:** 262/300 trials correct; mean participant balanced accuracy
+**87.33%**, across ten DB5 participants. This is a **retrospective internal,
+full-batch transductive result**, with known class counts and pose side information,
+not an untouched-subject or online recognition benchmark.
+
+[Research logic](#research-logic) · [Protocol](#study-at-a-glance) ·
+[Method](#pipeline) · [Results](#internal-development-results) ·
+[Verification](#verification) · [Open questions](#what-remains-to-be-tested)
+
+## Research logic
+
+A classifier trained only to output the calibration labels cannot directly name
+an excluded class. A pose descriptor offers a different target: the model can
+predict continuous hand-state features even when the gesture label was absent
+from calibration. But the existence of a pose prediction does not guarantee that
+it transfers correctly. The pipeline therefore keeps representation, grouping,
+and naming as inspectable operations.
+
+| Research question | Design choice | What the evidence can establish |
+|---|---|---|
+| Can the task require transfer rather than recall of registered gesture labels? | Exclude all target B1/B2/B3/B4/B7 examples from fitting; retain A1-A12+B5/B6. | A movement-disjoint target calibration task, conditional on the permitted pose references. |
+| How can an excluded gesture acquire a name? | Regress EMG onto continuous glove summaries; compare predictions with other-nine class prototypes. | A specified cross-modal inference route whose predictions and assignments can be inspected separately. |
+| Can grouping be distinguished from assigning meaning? | Construct anonymous EMG/pose clusters before one-to-one semantic assignment. | Two distinct, inspectable failure locations; classification alone does not prove correct pose recovery. |
+| How can settings be chosen without using the final query labels during execution? | Whole-class A holdouts, a B5/B6 guard, and a fixed candidate-selection rule. | Label separation in the final selection/prediction run, not freedom from earlier development exposure. |
+| Can the reported result be checked? | Save selections and predictions before scoring; use hashes and a separate replay verifier. | Integrity and numerical reproducibility of the stored run, not external validation. |
+
+The implementation uses handcrafted features, weighted RidgeCV, balanced
+clustering, and Hungarian assignment. It is **not the EMBridge MAE/Q-Former
+architecture**. A transparent regression baseline remains useful here because
+each stage has a defined input, objective, and failure mode.
 
 ## Study at a glance
 
@@ -29,16 +60,31 @@ the EMBridge MAE/Q-Former neural architecture.
 | Primary metric | Mean subject-level trial balanced accuracy |
 | Explicit exclusions | DB1, Exercise C, B8, and B9-B17 |
 
+The calibration library can be called **Basic14**: 12 isolated movements plus
+two coordinated movements. B5/B6 remain Exercise-B movements in the dataset;
+they are not relabeled as isolated Exercise-A movements. **Complex5** denotes
+the five evaluation gestures, not a measured physiological complexity scale.
+
 ![Symmetric target calibration, selection, and evaluation boundary](assets/study_design.png)
 
 For each target fold, the current target is excluded from the semantic donor bank.
-The other nine participants provide pose descriptors, while the evaluated target
-provides EMG only. Evaluated-query labels and glove data are joined only after
-predictions have been frozen and hash-locked.
+The other nine participants provide pose descriptors for the evaluated classes.
+The target provides paired EMG/glove during calibration, but **query inference
+does not use that target's query glove or gesture labels**. Query labels are
+joined only after predictions have been saved and hash-locked; query glove is
+not required to score gesture recognition.
+
+For example, when s4 is the target, its A1-A12+B5/B6 pairs fit the bridge, and
+s1-s3 plus s5-s10 supply the pose reference bank. The same role assignment is
+applied to every participant. This is leave-one-participant-out **for the donor
+bank**, not a model trained without any target-person calibration.
 
 ## Gesture protocol
 
 The movement names follow the NinaPro movement taxonomy.
+
+<details>
+<summary>Movement-by-movement calibration and evaluation inventory</summary>
 
 ### Calibration movements
 
@@ -66,6 +112,8 @@ This A-to-B split is an operational semantic design. It should not be interprete
 as a universal physiological ordering in which every Exercise-B movement is more
 complex than every Exercise-A movement.
 
+</details>
+
 ## Pipeline
 
 ![Target-A stability-selected transductive pipeline](assets/pipeline.png)
@@ -92,6 +140,70 @@ complex than every Exercise-A movement.
    clusters one-to-one to B1/B2/B3/B4/B7.
 7. **Sealed evaluation.** Candidate choices, model state, and predictions are
    hashed before target truth is loaded. Evaluation is then independently replayed.
+
+### What each representation contains
+
+The 128D EMG vector contains eight summaries per channel: mean absolute value,
+root mean square, standard deviation, peak-to-peak range, waveform length,
+zero-crossing rate, slope-sign-change rate, and normalized waveform length.
+The 66D glove vector contains the mean, standard deviation, and end-minus-start
+change of each of 22 sensors. These are sensor-space pose summaries, **not
+calibrated anatomical angles or full trajectories**.
+
+All final Ridge models take 128 EMG features, even when clustering uses the
+16D MAV view. Window weights equalize the total contribution of each calibration
+trial. With standardized calibration features and pose targets, the objective is
+
+$$
+\min_{B,b}\;\sum_i w_i\|\widetilde y_i-B^T\widetilde x_i-b\|_2^2
++\alpha\|B\|_F^2.
+$$
+
+RidgeCV selects the regularization strength. Predicted pose is returned to sensor
+units, then standardized against target A calibration statistics for semantic
+comparison. Donor poses are standardized against each donor's own A statistics
+before averaging within trials, across repetitions, and across the other nine
+participants.
+
+### Why grouping and naming are different
+
+For each trial, average its windows and then normalize the EMG view and predicted
+pose to unit length, giving $e_t$ and $v_t$. The clustering representation is
+
+$$
+h_t=\frac{[e_t;\sqrt{\lambda}\,v_t]}{\sqrt{1+\lambda}},
+\qquad\lambda\in\{0,0.25,1\}.
+$$
+
+The algorithm minimizes within-cluster squared distances while assigning exactly
+six of the 30 trials to each of five clusters. Multiple deterministic starts are
+used; this is not a guarantee of the global clustering optimum.
+
+For naming, compute cosine similarities between each trial's predicted pose and
+each class prototype, then aggregate scores within each cluster. If $S_{jc}$ is
+the resulting score for cluster $j$ and class $c$, naming solves
+
+$$
+\pi^*=\arg\max_{\pi\in\mathcal S_5}\sum_{j=1}^{5}S_{j,\pi(j)}.
+$$
+
+The Hungarian algorithm finds this one-to-one assignment. A cluster numbered
+`0` has no inherent connection to `B1`. **Even when the pose clustering weight is
+zero, naming still uses predicted pose and donor pose prototypes.**
+
+### Selection and its boundaries
+
+Candidate selection uses 12 A-class holdout episodes, not random windows from
+the same gesture. An alternative must retain mean A BA within 0.005 of its stored
+default, achieve B5/B6 proxy BA of at least 0.80, and improve
+`mean A BA - 0.5 x SD` by at least 0.02. Otherwise the default remains.
+
+A previously fixed assignment-margin gate selects between full 66D and dynamic
+44D pose naming. The dynamic view omits the 22 mean features. Stored defaults and
+participant-specific gates are inherited from earlier development; the final
+selector is not a complete de novo selection procedure for an untouched person.
+See the [selection protocol](code/STEP56_DB5_TARGET_A_STABILITY_PROTOCOL.md) and
+[gate implementation](code/step52_db5_margin_gate.py).
 
 ## Internal development results
 
@@ -121,6 +233,50 @@ accuracy and macro F1 were both **0.8733**. Mean window-level balanced accuracy 
 | B7 | 53 | 0.8833 | B3: 6, B2: 1 |
 
 ![Pooled confusion matrix and per-target class outcomes](assets/confusion_and_class_outcomes.png)
+
+### Reading the result rather than only the average
+
+- **Performance is heterogeneous.** Six participants have 30/30 correct trials,
+  while s1 and s6 have 18/30. The mean is not a guarantee for a new user.
+- **Errors are structured.** B1 has 60/60 correct trials; B2/B3 each have 47/60.
+  A wrong cluster name can produce several correlated errors at once.
+- **BA and macro F1 coincide here by construction.** Both true and predicted
+  class counts are six per participant, so per-class precision equals recall.
+  Their agreement is not a second independent finding.
+- **388 windows are not 388 independent decisions.** Each window inherits its
+  trial's prediction. The trial endpoint is primary; window BA is secondary.
+
+The result supports the feasibility of this specified cluster-and-name procedure.
+It does not establish that the predicted pose is anatomically accurate or that
+the batch priors are unnecessary.
+
+## Research practices visible in the code
+
+| Practice | Inspectable implementation |
+|---|---|
+| Explicit class and subject access rules | [Target-A selection protocol](code/STEP56_DB5_TARGET_A_STABILITY_PROTOCOL.md), [symmetric donor construction](code/step42c_symmetric_reference.py) |
+| Transparent signal-to-pose objective | [Group-balanced weights and Ridge fitting](code/step42b0_graded_primitive.py) |
+| Separate grouping and semantic assignment | [Balanced clustering](code/step42c_balanced_transductive.py), [naming aggregation](code/step48_db5_stable_naming.py) |
+| A selector that can retain its default | [Selection rule](code/step56_db5_target_a_stability.py), [guard and stability tests](tests/test_step56_db5_target_a_stability.py) |
+| Prediction before label access | [Prediction runner](code/run_step56_db5_target_a_stability_phase2_predict.py), [separate evaluator](code/evaluate_step56_db5_target_a_stability.py) |
+| A result that can be audited separately from training | [Replay verifier](code/verify_step56_db5_target_a_stability.py), [capacity and determinism tests](tests/test_step42c_balanced_transductive.py) |
+
+These checks make a computational claim inspectable. They do not turn repeated
+development on one dataset into a prospective study.
+
+## What remains to be tested
+
+| Next question | Discriminating test | Why it matters |
+|---|---|---|
+| Does the pose correspondence carry gesture information beyond grouping? | Freeze all choices, then compare intact correspondence with pairing- and semantic-permutation controls on an untouched evaluation. | Separates meaningful alignment from a convenient partition plus assignment prior. |
+| How much does exact class balance contribute? | Evaluate the same frozen method against count-unconstrained and unequal-frequency conditions. | Separates signal evidence from batch side information. |
+| Does the method transfer to a new acquisition? | Fix defaults, gates, and selection rules before acquiring another session or cohort. | Tests generalization beyond the development participants and recordings. |
+| What information does the shared pose space preserve? | Measure pose recovery, cross-condition decoding, and nuisance sensitivity separately from gesture BA. | A representation useful for naming need not preserve all aspects of the underlying signal. |
+
+These are tests needed to extend the claim, **not completed validations of this
+released endpoint**. Later trajectory/composition experiments in the research
+workspace are separate branches and are not pooled with this repository's 87.33%
+result.
 
 ## Repository layout
 
@@ -197,9 +353,10 @@ Phase 2 with `--phase1`.
 - Query inference uses target EMG only, but calibration requires target A1-A12 and
   B5/B6 glove data, and semantic naming requires evaluated-class glove prototypes
   from the other nine participants.
-- Results are available for one dataset, one acquisition setup, and intact
-  participants. New subjects, sessions, devices, electrode shifts, amputee users,
-  unequal class frequencies, latency, and open-set rejection remain untested.
+- The primary endpoint concerns one dataset, one acquisition setup, and intact
+  participants. It does not establish performance for new subjects, sessions,
+  devices, electrode shifts, amputee users, unequal class frequencies, real-time
+  latency, or open-set rejection.
 - Subject folds share overlapping nine-person donor banks, so the ten outcomes are
   not independent population samples.
 
